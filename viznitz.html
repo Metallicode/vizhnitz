@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torah Semantic Gematria Visualizer</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0b0f19;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #sidebar {
+            width: 320px;
+            background-color: #151b2b;
+            padding: 20px;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+        h2 { margin-top: 0; color: #4da8da; font-size: 1.5rem; }
+        .control-group { margin-bottom: 20px; }
+        input[type="file"], input[type="text"] {
+            width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box;
+            background-color: #0b0f19; border: 1px solid #4da8da; color: #fff;
+            border-radius: 4px; font-size: 1.1rem;
+        }
+        input[type="text"] { direction: rtl; }
+        #gematria-result { font-size: 2.5rem; font-weight: bold; color: #f39c12; text-align: center; margin: 10px 0; }
+        #match-list {
+            flex-grow: 1; overflow-y: auto; background-color: #0b0f19;
+            border: 1px solid #333; border-radius: 4px; padding: 10px; direction: rtl;
+        }
+        .match-item { font-size: 1.2rem; padding: 5px; border-bottom: 1px solid #222; }
+        
+        #viz-container { flex-grow: 1; position: relative; }
+        svg { width: 100%; height: 100%; cursor: grab; }
+        svg:active { cursor: grabbing; }
+        
+        /* New Tooltip Styling */
+        #tooltip {
+            position: absolute;
+            background-color: rgba(20, 25, 40, 0.95);
+            color: #fff;
+            padding: 10px 15px;
+            border: 1px solid #4da8da;
+            border-radius: 6px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s ease;
+            font-size: 1.2rem;
+            direction: rtl;
+            text-align: right;
+            z-index: 100;
+            box-shadow: 0px 4px 10px rgba(0,0,0,0.5);
+        }
+        .tooltip-word { font-size: 1.8rem; font-weight: bold; color: #f39c12; margin-bottom: 5px; }
+        
+        /* D3 Elements */
+        .word-node { transition: opacity 0.3s, r 0.2s, fill 0.2s; cursor: crosshair; }
+        .dimmed { opacity: 0.15; }
+        .highlighted { fill: #f39c12 !important; opacity: 1 !important; }
+        .word-label { font-family: Arial, sans-serif; font-weight: bold; font-size: 14px; text-anchor: middle; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2>Kabbalistic Explorer</h2>
+        <div class="control-group">
+            <label for="file-upload">1. Load Semantic JSON:</label>
+            <input type="file" id="file-upload" accept=".json">
+        </div>
+        <div class="control-group">
+            <label for="search-box">2. Search Word / Highlight:</label>
+            <input type="text" id="search-box" placeholder="e.g. מים">
+        </div>
+        <div class="control-group">
+            <label>Calculated Gematria:</label>
+            <div id="gematria-result">0</div>
+        </div>
+        <div class="control-group" style="flex-grow: 1; display: flex; flex-direction: column;">
+            <label>Matching Words in Torah:</label>
+            <div id="match-list"></div>
+        </div>
+    </div>
+
+    <div id="viz-container"></div>
+    
+    <div id="tooltip"></div>
+
+    <script>
+        function calculateGematria(word) {
+            const gematriaMap = {
+                'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6, 'ז': 7, 'ח': 8, 'ט': 9,
+                'י': 10, 'כ': 20, 'ך': 20, 'ל': 30, 'מ': 40, 'ם': 40, 'נ': 50, 'ן': 50,
+                'ס': 60, 'ע': 70, 'פ': 80, 'ף': 80, 'צ': 90, 'ץ': 90, 'ק': 100, 'ר': 200,
+                'ש': 300, 'ת': 400
+            };
+            let sum = 0;
+            for (let char of word) {
+                if (gematriaMap[char]) sum += gematriaMap[char];
+            }
+            return sum;
+        }
+
+        let globalData = [];
+        let svg, g, zoom;
+
+        document.getElementById('file-upload').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const jsonData = JSON.parse(e.target.result);
+                        initVisualization(jsonData);
+                    } catch (err) {
+                        alert("Error parsing JSON file. Make sure you loaded the t-SNE database.");
+                    }
+                };
+                reader.readAsText(file);
+            }
+        });
+
+        function initVisualization(data) {
+            globalData = data;
+            const container = document.getElementById('viz-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            const tooltip = d3.select("#tooltip");
+
+            d3.select("#viz-container").selectAll("svg").remove();
+
+            zoom = d3.zoom()
+                .scaleExtent([0.1, 15])
+                .on("zoom", (event) => g.attr("transform", event.transform));
+
+            svg = d3.select("#viz-container").append("svg").call(zoom);
+            g = svg.append("g");
+
+            // 1. Draw the Point Cloud (Circles)
+            const nodes = g.selectAll(".word-node")
+                .data(globalData)
+                .enter()
+                .append("circle")
+                .attr("class", "word-node")
+                .attr("cx", d => d.x + (width/2))
+                .attr("cy", d => d.y + (height/2))
+                .attr("r", 3)
+                .attr("fill", "#4da8da")
+                .attr("opacity", 0.7)
+                .on("mouseover", function(event, d) {
+                    // Enlarge dot on hover
+                    d3.select(this).attr("r", 8).attr("fill", "#fff");
+                    
+                    // Show Tooltip
+                    tooltip.transition().duration(100).style("opacity", 1);
+                    tooltip.html(`<div class="tooltip-word">${d.word}</div>Gematria: ${d.gematria}`)
+                           .style("left", (event.pageX + 15) + "px")
+                           .style("top", (event.pageY - 40) + "px");
+                })
+                .on("mousemove", function(event) {
+                    // Make tooltip follow mouse
+                    tooltip.style("left", (event.pageX + 15) + "px")
+                           .style("top", (event.pageY - 40) + "px");
+                })
+                .on("mouseout", function(event, d) {
+                    // Return dot to normal size (unless it's actively highlighted by search)
+                    const isHighlighted = d3.select(this).classed("highlighted");
+                    d3.select(this)
+                      .attr("r", isHighlighted ? 6 : 3)
+                      .attr("fill", isHighlighted ? "#f39c12" : "#4da8da");
+                      
+                    // Hide tooltip
+                    tooltip.transition().duration(200).style("opacity", 0);
+                });
+
+            // 2. Setup hidden text labels for search results
+            const labels = g.selectAll(".word-label")
+                .data(globalData)
+                .enter()
+                .append("text")
+                .attr("class", "word-label")
+                .attr("x", d => d.x + (width/2))
+                .attr("y", d => d.y + (height/2) - 10)
+                .attr("fill", "#f39c12")
+                .text(d => d.word)
+                .style("display", "none"); // Hidden by default
+        }
+
+        document.getElementById('search-box').addEventListener('input', function(e) {
+            const inputWord = e.target.value.trim();
+            const gValue = calculateGematria(inputWord);
+            
+            document.getElementById('gematria-result').innerText = gValue;
+
+            if (gValue === 0) {
+                // Reset to default galaxy view
+                d3.selectAll(".word-node")
+                    .attr("class", "word-node")
+                    .attr("r", 3)
+                    .attr("fill", "#4da8da")
+                    .attr("opacity", 0.7);
+                d3.selectAll(".word-label").style("display", "none");
+                document.getElementById('match-list').innerHTML = "";
+                return;
+            }
+
+            const matches = [];
+
+            // Update circles: Light up matches, dim the rest
+            d3.selectAll(".word-node")
+                .attr("class", function(d) {
+                    if (d.gematria === gValue) {
+                        matches.push(d.word);
+                        return "word-node highlighted";
+                    }
+                    return "word-node dimmed";
+                })
+                .attr("r", d => d.gematria === gValue ? 6 : 3);
+
+            // Show text labels ONLY for matched words
+            d3.selectAll(".word-label")
+                .style("display", d => d.gematria === gValue ? "block" : "none");
+
+            document.getElementById('match-list').innerHTML = matches.map(word => `<div class="match-item">${word}</div>`).join('');
+        });
+    </script>
+</body>
+</html>
